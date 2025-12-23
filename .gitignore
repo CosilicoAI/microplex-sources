@@ -1,2 +1,3 @@
 macro/targets.db
 __pycache__/
+micro/us/*.parquet

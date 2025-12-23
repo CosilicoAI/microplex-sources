@@ -177,17 +177,19 @@ def _generate_synthetic_cps(
     })
 
 
-def _load_cps_from_file(year: int) -> Optional[pd.DataFrame]:
+def _load_cps_from_file(year: int, auto_download: bool = True) -> Optional[pd.DataFrame]:
     """
-    Attempt to load CPS data from parquet files.
+    Attempt to load CPS data from parquet files, downloading if needed.
 
-    Looks for data in micro/us/ directory.
+    Looks for data in micro/us/ directory. If not found and auto_download
+    is True, downloads from Census Bureau.
 
     Args:
         year: Year of data to load
+        auto_download: If True, download from Census if file not found
 
     Returns:
-        DataFrame if file exists, None otherwise
+        DataFrame if file exists or downloaded, None otherwise
     """
     # Check standard locations
     data_dir = Path(__file__).parent.parent / "micro" / "us"
@@ -218,6 +220,21 @@ def _load_cps_from_file(year: int) -> Optional[pd.DataFrame]:
                         f"Columns: {df.columns.tolist()}"
                     )
             return df
+
+    # Try to download if not found
+    if auto_download:
+        try:
+            from micro.us.census.download_cps import download_and_process_cps, CPS_URL_BY_YEAR
+
+            if year in CPS_URL_BY_YEAR:
+                print(f"CPS {year} not found locally, downloading from Census Bureau...")
+                output_path = data_dir / f"cps_{year}.parquet"
+                return download_and_process_cps(year, output_path)
+        except ImportError:
+            pass  # download_cps module not available
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to download CPS {year}: {e}")
 
     return None
 
