@@ -345,7 +345,7 @@ class TestBuildConstraintMatrix:
 
 
 class TestEntropyCalibrator:
-    """Tests for EntropyCalibrator (placeholder for future implementation)."""
+    """Tests for EntropyCalibrator."""
 
     def test_entropy_calibrator_exists(self):
         """EntropyCalibrator class should exist."""
@@ -360,3 +360,232 @@ class TestEntropyCalibrator:
 
         calibrator = EntropyCalibrator()
         assert hasattr(calibrator, "calibrate")
+
+    def test_calibrated_weights_sum_correctly(self):
+        """Calibrated weights should sum to expected total."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        # Simple case: 100 records, want total weight 1000
+        n = 100
+        original_weights = np.ones(n) * 10.0  # Sum = 1000
+
+        # Create constraint: sum of all weights should be 1200
+        indicator = np.ones(n)
+        constraints = [
+            Constraint(
+                indicator=indicator,
+                target_value=1200.0,
+                variable="total",
+                target_type=TargetType.COUNT,
+            )
+        ]
+
+        calibrator = EntropyCalibrator()
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Sum should match target
+        np.testing.assert_allclose(calibrated.sum(), 1200.0, rtol=1e-4)
+
+    def test_constraints_satisfied_within_tolerance(self):
+        """Calibration should satisfy constraints within tolerance."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        np.random.seed(42)
+        n = 200
+        original_weights = np.random.uniform(5, 15, n)
+
+        # Two strata: first half and second half
+        indicator1 = np.concatenate([np.ones(n // 2), np.zeros(n // 2)])
+        indicator2 = np.concatenate([np.zeros(n // 2), np.ones(n // 2)])
+
+        constraints = [
+            Constraint(
+                indicator=indicator1,
+                target_value=600.0,
+                variable="stratum1",
+                target_type=TargetType.COUNT,
+                tolerance=0.01,
+            ),
+            Constraint(
+                indicator=indicator2,
+                target_value=800.0,
+                variable="stratum2",
+                target_type=TargetType.COUNT,
+                tolerance=0.01,
+            ),
+        ]
+
+        calibrator = EntropyCalibrator()
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Check constraints are satisfied
+        actual1 = (calibrated * indicator1).sum()
+        actual2 = (calibrated * indicator2).sum()
+
+        np.testing.assert_allclose(actual1, 600.0, rtol=0.01)
+        np.testing.assert_allclose(actual2, 800.0, rtol=0.01)
+
+    def test_weights_respect_bounds(self):
+        """Calibrated weights should respect min/max bounds."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        n = 100
+        original_weights = np.ones(n) * 10.0
+
+        indicator = np.ones(n)
+        constraints = [
+            Constraint(
+                indicator=indicator,
+                target_value=1500.0,
+                variable="total",
+                target_type=TargetType.COUNT,
+            )
+        ]
+
+        # Set bounds: weights can be 0.5x to 2x original
+        calibrator = EntropyCalibrator(bounds=(0.5, 2.0))
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Check all weights are within bounds
+        min_weight = original_weights * 0.5
+        max_weight = original_weights * 2.0
+        assert np.all(calibrated >= min_weight - 1e-6)
+        assert np.all(calibrated <= max_weight + 1e-6)
+
+    def test_minimal_deviation_from_original(self):
+        """Calibration should minimize KL divergence."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        np.random.seed(42)
+        n = 100
+        original_weights = np.random.uniform(8, 12, n)
+
+        # Constraint that's already nearly satisfied
+        indicator = np.ones(n)
+        current_sum = original_weights.sum()
+        target = current_sum * 1.05  # Just 5% adjustment needed
+
+        constraints = [
+            Constraint(
+                indicator=indicator,
+                target_value=target,
+                variable="total",
+                target_type=TargetType.COUNT,
+            )
+        ]
+
+        calibrator = EntropyCalibrator()
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Compute KL divergence: sum(w * log(w/w0))
+        kl_div = np.sum(calibrated * np.log(calibrated / original_weights))
+
+        # For a single uniform constraint, uniform scaling is optimal
+        # and should give the same KL divergence
+        uniform_scale = target / current_sum
+        uniform_weights = original_weights * uniform_scale
+        kl_uniform = np.sum(uniform_weights * np.log(uniform_weights / original_weights))
+
+        # Our solution should be very close to uniform scaling
+        np.testing.assert_allclose(kl_div, kl_uniform, rtol=0.01)
+
+    def test_amount_constraint(self):
+        """Should handle AMOUNT type constraints correctly."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        np.random.seed(42)
+        n = 100
+        original_weights = np.ones(n) * 10.0
+        income = np.random.lognormal(10, 1, n)
+
+        # Constraint: total weighted income should be 5M
+        indicator = income
+        constraints = [
+            Constraint(
+                indicator=indicator,
+                target_value=5_000_000.0,
+                variable="income",
+                target_type=TargetType.AMOUNT,
+            )
+        ]
+
+        calibrator = EntropyCalibrator()
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Check constraint is satisfied
+        actual = (calibrated * income).sum()
+        np.testing.assert_allclose(actual, 5_000_000.0, rtol=0.01)
+
+    def test_multiple_amount_constraints(self):
+        """Should handle multiple AMOUNT constraints simultaneously."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        np.random.seed(42)
+        n = 100
+        original_weights = np.ones(n) * 10.0
+        income = np.random.lognormal(10, 1, n)
+        taxes = income * 0.2
+
+        constraints = [
+            Constraint(
+                indicator=income,
+                target_value=5_000_000.0,
+                variable="income",
+                target_type=TargetType.AMOUNT,
+            ),
+            Constraint(
+                indicator=taxes,
+                target_value=1_000_000.0,
+                variable="taxes",
+                target_type=TargetType.AMOUNT,
+            ),
+        ]
+
+        calibrator = EntropyCalibrator()
+        calibrated = calibrator.calibrate(original_weights, constraints)
+
+        # Both constraints should be satisfied
+        actual_income = (calibrated * income).sum()
+        actual_taxes = (calibrated * taxes).sum()
+
+        np.testing.assert_allclose(actual_income, 5_000_000.0, rtol=0.01)
+        np.testing.assert_allclose(actual_taxes, 1_000_000.0, rtol=0.01)
+
+    def test_infeasible_constraints_raises_error(self):
+        """Should raise error if constraints are infeasible."""
+        from calibration.methods.entropy import EntropyCalibrator
+        from calibration.constraints import Constraint
+
+        n = 10
+        original_weights = np.ones(n) * 10.0
+
+        # Infeasible: want sum = 500, but max possible is 10 * 10 * 10 = 1000
+        # with bounds (0.1, 10) and tight second constraint
+        indicator1 = np.ones(n)
+        indicator2 = np.ones(n)
+
+        constraints = [
+            Constraint(
+                indicator=indicator1,
+                target_value=50.0,  # Need average weight of 5
+                variable="total",
+                target_type=TargetType.COUNT,
+            ),
+            Constraint(
+                indicator=indicator2,
+                target_value=150.0,  # Need average weight of 15
+                variable="total2",
+                target_type=TargetType.COUNT,
+            ),
+        ]
+
+        calibrator = EntropyCalibrator(bounds=(0.5, 1.5))
+
+        with pytest.raises((ValueError, RuntimeError)):
+            calibrator.calibrate(original_weights, constraints)
