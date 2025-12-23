@@ -19,6 +19,7 @@ from .schema import (
 from .etl_soi import load_soi_targets
 from .etl_soi_state import load_soi_state_targets
 from .etl_soi_credits import load_soi_credits_targets
+from .etl_soi_income_sources import load_soi_income_sources_targets
 from .etl_snap import load_snap_targets
 from .etl_hmrc import load_hmrc_targets
 from .etl_census import load_census_targets
@@ -44,6 +45,7 @@ __all__ = [
     "load_soi_targets",
     "load_soi_state_targets",
     "load_soi_credits_targets",
+    "load_soi_income_sources_targets",
     "load_snap_targets",
     "load_hmrc_targets",
     "load_census_targets",
