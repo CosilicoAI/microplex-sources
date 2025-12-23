@@ -9,6 +9,17 @@ documentation: "https://www2.census.gov/programs-surveys/cps/techdocs/cpsmar24.p
 
 years_available: [2018, 2019, 2020, 2021, 2022, 2023, 2024]
 
+# DESIGN PRINCIPLE: Primary Inputs Only
+# -------------------------------------
+# This index lists PRIMARY survey inputs - raw responses that cannot be derived.
+# Derived values (like "number of qualifying children") are NOT extracted because:
+# 1. Definitions vary by program (EITC §32(c)(3) vs CTC §24 vs SNAP)
+# 2. The rules engine should be the source of truth for applying statutes
+# 3. CPS-derived counts may not match statutory definitions
+#
+# Qualifying children, tax liability, benefit amounts, etc. should be computed
+# in the rules engine (cosilico-us) from primary inputs.
+
 entities:
   - person
   - tax_unit
@@ -77,6 +88,12 @@ variables:
   - PH_SEQ         # Household sequence
   - PF_SEQ         # Family sequence
   - P_SEQ          # Person sequence
+  - A_LINENO       # Person line number within household
   - TAX_ID         # Tax unit ID
   - SPM_ID         # SPM unit ID
   - A_FNLWGT       # Person weight
+  - MARSUPWT       # March supplement weight
+
+  # Relationship (primary inputs for qualifying child derivation)
+  - A_FAMREL       # Relationship to family reference person
+  - PARENT         # Line number of parent in household
