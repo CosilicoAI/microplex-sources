@@ -16,8 +16,12 @@ from db.schema import (
 from db.etl_soi_credits import (
     load_soi_credits_targets,
     load_eitc_by_children_targets,
+    load_ctc_by_children_targets,
+    load_actc_by_children_targets,
     SOI_CREDITS_DATA,
     EITC_BY_CHILDREN_DATA,
+    CTC_BY_CHILDREN_DATA,
+    ACTC_BY_CHILDREN_DATA,
     STATE_FIPS,
     SOURCE_URLS,
 )
@@ -516,3 +520,329 @@ class TestEitcByChildrenETL:
             assert target.source == DataSource.IRS_SOI
             assert target.source_table == "EITC Statistics by Number of Qualifying Children"
             assert "earned-income-tax-credit" in target.source_url
+
+
+class TestCtcByChildrenETL:
+    """Tests for CTC by number of children ETL loader."""
+
+    def test_load_ctc_by_children_creates_strata(self, temp_db):
+        """Loading CTC by children should create child-count strata."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            # Check for all 3 child-count strata (CTC requires at least 1 child)
+            strata_names = [
+                "US CTC 1 Child",
+                "US CTC 2 Children",
+                "US CTC 3+ Children",
+            ]
+
+            for name in strata_names:
+                stratum = session.exec(
+                    select(Stratum).where(Stratum.name == name)
+                ).first()
+                assert stratum is not None, f"Missing stratum: {name}"
+                assert stratum.stratum_group_id == "ctc_by_children"
+
+    def test_load_ctc_by_children_creates_claims_targets(self, temp_db):
+        """Loading CTC by children should create claims count targets."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 1 Child")
+            ).first()
+
+            claims_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "ctc_claims")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert claims_target is not None
+            assert claims_target.target_type == TargetType.COUNT
+            assert claims_target.source == DataSource.IRS_SOI
+            expected = CTC_BY_CHILDREN_DATA[2021]["1_child"]["claims"]
+            assert claims_target.value == expected
+
+    def test_load_ctc_by_children_creates_amount_targets(self, temp_db):
+        """Loading CTC by children should create amount targets."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 3+ Children")
+            ).first()
+
+            amount_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "ctc_amount")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert amount_target is not None
+            assert amount_target.target_type == TargetType.AMOUNT
+            assert amount_target.source == DataSource.IRS_SOI
+            expected = CTC_BY_CHILDREN_DATA[2021]["3plus_children"]["amount"]
+            assert amount_target.value == expected
+
+    def test_load_ctc_by_children_correct_constraints(self, temp_db):
+        """Child-count strata should have ctc_qualifying_children constraints."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            # Check 1 child stratum
+            stratum_1 = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 1 Child")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_1.constraints:
+                if constraint.variable == "ctc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == "=="
+            assert child_constraint.value == "1"
+
+            # Check 3+ children stratum
+            stratum_3plus = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 3+ Children")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_3plus.constraints:
+                if constraint.variable == "ctc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == ">="
+            assert child_constraint.value == "3"
+
+    def test_ctc_by_children_totals_reasonable(self, temp_db):
+        """National CTC totals by children should be reasonable."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            data = CTC_BY_CHILDREN_DATA[2021]
+
+            # Sum all claims - should be around 35M
+            total_claims = sum(d["claims"] for d in data.values())
+            assert 30_000_000 < total_claims < 40_000_000
+
+            # Sum all amounts - should be around $100B
+            total_amount = sum(d["amount"] for d in data.values())
+            assert 80_000_000_000 < total_amount < 120_000_000_000
+
+    def test_ctc_by_children_has_parent_stratum(self, temp_db):
+        """CTC by children strata should have national parent."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            national = session.exec(
+                select(Stratum).where(Stratum.name == "US All Filers")
+            ).first()
+
+            stratum_1 = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 1 Child")
+            ).first()
+
+            assert stratum_1.parent_id == national.id
+
+    def test_ctc_by_children_idempotent(self, temp_db):
+        """Loading CTC by children twice should not duplicate strata."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+            load_ctc_by_children_targets(session, years=[2021])
+
+            strata = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 2 Children")
+            ).all()
+
+            assert len(strata) == 1
+
+    def test_ctc_by_children_source_metadata(self, temp_db):
+        """CTC by children targets should have correct source metadata."""
+        with Session(temp_db) as session:
+            load_ctc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US CTC 1 Child")
+            ).first()
+
+            target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "ctc_claims")
+            ).first()
+
+            assert target.source == DataSource.IRS_SOI
+            assert target.source_table == "CTC Statistics by Number of Qualifying Children"
+            assert "state-data" in target.source_url
+
+
+class TestActcByChildrenETL:
+    """Tests for ACTC by number of children ETL loader."""
+
+    def test_load_actc_by_children_creates_strata(self, temp_db):
+        """Loading ACTC by children should create child-count strata."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            # Check for all 3 child-count strata (ACTC requires at least 1 child)
+            strata_names = [
+                "US ACTC 1 Child",
+                "US ACTC 2 Children",
+                "US ACTC 3+ Children",
+            ]
+
+            for name in strata_names:
+                stratum = session.exec(
+                    select(Stratum).where(Stratum.name == name)
+                ).first()
+                assert stratum is not None, f"Missing stratum: {name}"
+                assert stratum.stratum_group_id == "actc_by_children"
+
+    def test_load_actc_by_children_creates_claims_targets(self, temp_db):
+        """Loading ACTC by children should create claims count targets."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 1 Child")
+            ).first()
+
+            claims_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "actc_claims")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert claims_target is not None
+            assert claims_target.target_type == TargetType.COUNT
+            assert claims_target.source == DataSource.IRS_SOI
+            expected = ACTC_BY_CHILDREN_DATA[2021]["1_child"]["claims"]
+            assert claims_target.value == expected
+
+    def test_load_actc_by_children_creates_amount_targets(self, temp_db):
+        """Loading ACTC by children should create amount targets."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 3+ Children")
+            ).first()
+
+            amount_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "actc_amount")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert amount_target is not None
+            assert amount_target.target_type == TargetType.AMOUNT
+            assert amount_target.source == DataSource.IRS_SOI
+            expected = ACTC_BY_CHILDREN_DATA[2021]["3plus_children"]["amount"]
+            assert amount_target.value == expected
+
+    def test_load_actc_by_children_correct_constraints(self, temp_db):
+        """Child-count strata should have actc_qualifying_children constraints."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            # Check 1 child stratum
+            stratum_1 = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 1 Child")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_1.constraints:
+                if constraint.variable == "actc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == "=="
+            assert child_constraint.value == "1"
+
+            # Check 3+ children stratum
+            stratum_3plus = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 3+ Children")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_3plus.constraints:
+                if constraint.variable == "actc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == ">="
+            assert child_constraint.value == "3"
+
+    def test_actc_by_children_totals_reasonable(self, temp_db):
+        """National ACTC totals by children should be reasonable."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            data = ACTC_BY_CHILDREN_DATA[2021]
+
+            # Sum all claims - should be around 18M
+            total_claims = sum(d["claims"] for d in data.values())
+            assert 15_000_000 < total_claims < 22_000_000
+
+            # Sum all amounts - should be around $30B
+            total_amount = sum(d["amount"] for d in data.values())
+            assert 25_000_000_000 < total_amount < 40_000_000_000
+
+    def test_actc_by_children_has_parent_stratum(self, temp_db):
+        """ACTC by children strata should have national parent."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            national = session.exec(
+                select(Stratum).where(Stratum.name == "US All Filers")
+            ).first()
+
+            stratum_1 = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 1 Child")
+            ).first()
+
+            assert stratum_1.parent_id == national.id
+
+    def test_actc_by_children_idempotent(self, temp_db):
+        """Loading ACTC by children twice should not duplicate strata."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+            load_actc_by_children_targets(session, years=[2021])
+
+            strata = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 2 Children")
+            ).all()
+
+            assert len(strata) == 1
+
+    def test_actc_by_children_source_metadata(self, temp_db):
+        """ACTC by children targets should have correct source metadata."""
+        with Session(temp_db) as session:
+            load_actc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US ACTC 1 Child")
+            ).first()
+
+            target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "actc_claims")
+            ).first()
+
+            assert target.source == DataSource.IRS_SOI
+            assert target.source_table == "ACTC Statistics by Number of Qualifying Children"
+            assert "state-data" in target.source_url

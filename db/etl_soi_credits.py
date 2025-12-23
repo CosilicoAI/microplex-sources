@@ -560,6 +560,105 @@ EITC_CHILD_CATEGORIES = {
     },
 }
 
+# National CTC data by number of qualifying children (2021)
+# Source: IRS SOI Statistics
+# https://www.irs.gov/statistics/soi-tax-stats-state-data-fy-2022
+#
+# Representative 2021 data (national distribution):
+# - 1 child: ~14M claims, ~$30B (avg ~$2,143 per claim)
+# - 2 children: ~12M claims, ~$38B (avg ~$3,167 per claim)
+# - 3+ children: ~9M claims, ~$32B (avg ~$3,556 per claim)
+# Total: ~35M claims, ~$100B
+
+CTC_BY_CHILDREN_DATA = {
+    2021: {
+        "1_child": {
+            "claims": 14_000_000,
+            "amount": 30_000_000_000,
+        },
+        "2_children": {
+            "claims": 12_000_000,
+            "amount": 38_000_000_000,
+        },
+        "3plus_children": {
+            "claims": 9_000_000,
+            "amount": 32_000_000_000,
+        },
+    },
+}
+
+# CTC child count category definitions (CTC requires at least 1 child)
+CTC_CHILD_CATEGORIES = {
+    "1_child": {
+        "name": "US CTC 1 Child",
+        "description": "CTC recipients with one qualifying child",
+        "constraint_operator": "==",
+        "constraint_value": "1",
+    },
+    "2_children": {
+        "name": "US CTC 2 Children",
+        "description": "CTC recipients with two qualifying children",
+        "constraint_operator": "==",
+        "constraint_value": "2",
+    },
+    "3plus_children": {
+        "name": "US CTC 3+ Children",
+        "description": "CTC recipients with three or more qualifying children",
+        "constraint_operator": ">=",
+        "constraint_value": "3",
+    },
+}
+
+# National ACTC data by number of qualifying children (2021)
+# Source: IRS SOI Statistics
+# https://www.irs.gov/statistics/soi-tax-stats-state-data-fy-2022
+#
+# Representative 2021 data (national distribution):
+# ACTC is the refundable portion of CTC, taken by lower-income filers
+# - 1 child: ~7.5M claims, ~$10B (avg ~$1,333 per claim)
+# - 2 children: ~6M claims, ~$11B (avg ~$1,833 per claim)
+# - 3+ children: ~4.5M claims, ~$9B (avg ~$2,000 per claim)
+# Total: ~18M claims, ~$30B
+
+ACTC_BY_CHILDREN_DATA = {
+    2021: {
+        "1_child": {
+            "claims": 7_500_000,
+            "amount": 10_000_000_000,
+        },
+        "2_children": {
+            "claims": 6_000_000,
+            "amount": 11_000_000_000,
+        },
+        "3plus_children": {
+            "claims": 4_500_000,
+            "amount": 9_000_000_000,
+        },
+    },
+}
+
+# ACTC child count category definitions (ACTC requires at least 1 child)
+ACTC_CHILD_CATEGORIES = {
+    "1_child": {
+        "name": "US ACTC 1 Child",
+        "description": "ACTC recipients with one qualifying child",
+        "constraint_operator": "==",
+        "constraint_value": "1",
+    },
+    "2_children": {
+        "name": "US ACTC 2 Children",
+        "description": "ACTC recipients with two qualifying children",
+        "constraint_operator": "==",
+        "constraint_value": "2",
+    },
+    "3plus_children": {
+        "name": "US ACTC 3+ Children",
+        "description": "ACTC recipients with three or more qualifying children",
+        "constraint_operator": ">=",
+        "constraint_value": "3",
+    },
+}
+
 
 def get_or_create_stratum(
     session: Session,
@@ -817,6 +916,174 @@ def load_eitc_by_children_targets(session: Session, years: list[int] | None = No
                     source=DataSource.IRS_SOI,
                     source_table="EITC Statistics by Number of Qualifying Children",
                     source_url=SOURCE_URLS["eitc"],
+                )
+            )
+
+    session.commit()
+
+
+def load_ctc_by_children_targets(session: Session, years: list[int] | None = None):
+    """
+    Load national CTC targets stratified by number of qualifying children.
+
+    Creates strata for:
+    - 1 child
+    - 2 children
+    - 3+ children
+
+    Note: CTC requires at least 1 qualifying child (unlike EITC which has a 0-child category).
+
+    Args:
+        session: Database session
+        years: Years to load (default: all available)
+    """
+    if years is None:
+        years = list(CTC_BY_CHILDREN_DATA.keys())
+
+    for year in years:
+        if year not in CTC_BY_CHILDREN_DATA:
+            continue
+
+        data = CTC_BY_CHILDREN_DATA[year]
+
+        # Get or create national stratum (parent for child-count strata)
+        national_stratum = get_or_create_stratum(
+            session,
+            name="US All Filers",
+            jurisdiction=Jurisdiction.US_FEDERAL,
+            constraints=[("is_tax_filer", "==", "1")],
+            description="All individual income tax returns filed in the US",
+            stratum_group_id="national",
+        )
+
+        # Create strata and targets for each child category
+        for category_key, category_data in data.items():
+            category_def = CTC_CHILD_CATEGORIES[category_key]
+
+            # Create stratum for this child category
+            stratum = get_or_create_stratum(
+                session,
+                name=category_def["name"],
+                jurisdiction=Jurisdiction.US_FEDERAL,
+                constraints=[
+                    ("is_tax_filer", "==", "1"),
+                    ("ctc_qualifying_children", category_def["constraint_operator"], category_def["constraint_value"]),
+                ],
+                description=category_def["description"],
+                parent_id=national_stratum.id,
+                stratum_group_id="ctc_by_children",
+            )
+
+            # Add CTC claims target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="ctc_claims",
+                    period=year,
+                    value=category_data["claims"],
+                    target_type=TargetType.COUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="CTC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["ctc"],
+                )
+            )
+
+            # Add CTC amount target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="ctc_amount",
+                    period=year,
+                    value=category_data["amount"],
+                    target_type=TargetType.AMOUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="CTC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["ctc"],
+                )
+            )
+
+    session.commit()
+
+
+def load_actc_by_children_targets(session: Session, years: list[int] | None = None):
+    """
+    Load national ACTC targets stratified by number of qualifying children.
+
+    Creates strata for:
+    - 1 child
+    - 2 children
+    - 3+ children
+
+    Note: ACTC (Additional Child Tax Credit) is the refundable portion of CTC,
+    claimed by lower-income filers who cannot use the full CTC against their tax liability.
+    Like CTC, it requires at least 1 qualifying child.
+
+    Args:
+        session: Database session
+        years: Years to load (default: all available)
+    """
+    if years is None:
+        years = list(ACTC_BY_CHILDREN_DATA.keys())
+
+    for year in years:
+        if year not in ACTC_BY_CHILDREN_DATA:
+            continue
+
+        data = ACTC_BY_CHILDREN_DATA[year]
+
+        # Get or create national stratum (parent for child-count strata)
+        national_stratum = get_or_create_stratum(
+            session,
+            name="US All Filers",
+            jurisdiction=Jurisdiction.US_FEDERAL,
+            constraints=[("is_tax_filer", "==", "1")],
+            description="All individual income tax returns filed in the US",
+            stratum_group_id="national",
+        )
+
+        # Create strata and targets for each child category
+        for category_key, category_data in data.items():
+            category_def = ACTC_CHILD_CATEGORIES[category_key]
+
+            # Create stratum for this child category
+            stratum = get_or_create_stratum(
+                session,
+                name=category_def["name"],
+                jurisdiction=Jurisdiction.US_FEDERAL,
+                constraints=[
+                    ("is_tax_filer", "==", "1"),
+                    ("actc_qualifying_children", category_def["constraint_operator"], category_def["constraint_value"]),
+                ],
+                description=category_def["description"],
+                parent_id=national_stratum.id,
+                stratum_group_id="actc_by_children",
+            )
+
+            # Add ACTC claims target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="actc_claims",
+                    period=year,
+                    value=category_data["claims"],
+                    target_type=TargetType.COUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="ACTC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["ctc"],
+                )
+            )
+
+            # Add ACTC amount target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="actc_amount",
+                    period=year,
+                    value=category_data["amount"],
+                    target_type=TargetType.AMOUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="ACTC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["ctc"],
                 )
             )
 

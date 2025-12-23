@@ -46,6 +46,12 @@ def cmd_load(args):
             load_soi_income_sources_targets(session, years=years)
             print(f"Loaded SOI income sources targets for years: {years or 'all available'}")
 
+        if args.source == "soi-deductions" or args.source == "all":
+            from .etl_soi_deductions import load_soi_deductions_targets
+            years = [int(y) for y in args.years.split(",")] if args.years else None
+            load_soi_deductions_targets(session, years=years)
+            print(f"Loaded SOI deductions targets for years: {years or 'all available'}")
+
         if args.source == "snap" or args.source == "all":
             from .etl_snap import load_snap_targets
             years = [int(y) for y in args.years.split(",")] if args.years else None
@@ -181,7 +187,7 @@ def main():
     load_parser = subparsers.add_parser("load", help="Load targets from source")
     load_parser.add_argument(
         "source",
-        choices=["soi", "soi-state", "soi-credits", "soi-income-sources", "snap", "hmrc", "census", "ssa", "bls", "cps", "cbo", "obr", "ons", "all"],
+        choices=["soi", "soi-state", "soi-credits", "soi-income-sources", "soi-deductions", "snap", "hmrc", "census", "ssa", "bls", "cps", "cbo", "obr", "ons", "all"],
         help="Data source to load"
     )
     load_parser.add_argument(
