@@ -49,9 +49,10 @@ class TestSoiStateETL:
                 select(Stratum).where(Stratum.stratum_group_id == "soi_states")
             ).all()
 
-            # Should have strata for all 5 states in the data
+            # Should have strata for all 50 states + DC
             expected_states = len(STATE_FIPS)
             assert len(state_strata) == expected_states
+            assert expected_states == 51  # 50 states + DC
 
     def test_load_soi_state_creates_returns_targets(self, temp_db):
         """Loading state SOI should create tax returns count targets."""
@@ -186,7 +187,7 @@ class TestSoiStateETL:
             assert len(ca_strata) == 1
 
     def test_all_states_loaded(self, temp_db):
-        """All 5 states should be loaded."""
+        """All 50 states + DC should be loaded."""
         with Session(temp_db) as session:
             load_soi_state_targets(session, years=[2021])
 
