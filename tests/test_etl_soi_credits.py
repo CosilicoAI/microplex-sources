@@ -15,7 +15,9 @@ from db.schema import (
 )
 from db.etl_soi_credits import (
     load_soi_credits_targets,
+    load_eitc_by_children_targets,
     SOI_CREDITS_DATA,
+    EITC_BY_CHILDREN_DATA,
     STATE_FIPS,
     SOURCE_URLS,
 )
@@ -342,3 +344,175 @@ class TestSoiCreditsETL:
 
             assert tx_data["eitc_claims"] > vt_data["eitc_claims"]
             assert tx_data["ctc_claims"] > vt_data["ctc_claims"]
+
+
+class TestEitcByChildrenETL:
+    """Tests for EITC by number of children ETL loader."""
+
+    def test_load_eitc_by_children_creates_strata(self, temp_db):
+        """Loading EITC by children should create child-count strata."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            # Check for all 4 child-count strata
+            strata_names = [
+                "US EITC 0 Children",
+                "US EITC 1 Child",
+                "US EITC 2 Children",
+                "US EITC 3+ Children",
+            ]
+
+            for name in strata_names:
+                stratum = session.exec(
+                    select(Stratum).where(Stratum.name == name)
+                ).first()
+                assert stratum is not None, f"Missing stratum: {name}"
+                assert stratum.stratum_group_id == "eitc_by_children"
+
+    def test_load_eitc_by_children_creates_claims_targets(self, temp_db):
+        """Loading EITC by children should create claims count targets."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 0 Children")
+            ).first()
+
+            claims_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "eitc_claims")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert claims_target is not None
+            assert claims_target.target_type == TargetType.COUNT
+            assert claims_target.source == DataSource.IRS_SOI
+            expected = EITC_BY_CHILDREN_DATA[2021]["0_children"]["claims"]
+            assert claims_target.value == expected
+
+    def test_load_eitc_by_children_creates_amount_targets(self, temp_db):
+        """Loading EITC by children should create amount targets."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 3+ Children")
+            ).first()
+
+            amount_target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "eitc_amount")
+                .where(Target.period == 2021)
+            ).first()
+
+            assert amount_target is not None
+            assert amount_target.target_type == TargetType.AMOUNT
+            assert amount_target.source == DataSource.IRS_SOI
+            expected = EITC_BY_CHILDREN_DATA[2021]["3plus_children"]["amount"]
+            assert amount_target.value == expected
+
+    def test_load_eitc_by_children_correct_constraints(self, temp_db):
+        """Child-count strata should have qualifying_children constraints."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            # Check 0 children stratum
+            stratum_0 = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 0 Children")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_0.constraints:
+                if constraint.variable == "eitc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == "=="
+            assert child_constraint.value == "0"
+
+            # Check 3+ children stratum
+            stratum_3plus = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 3+ Children")
+            ).first()
+
+            child_constraint = None
+            for constraint in stratum_3plus.constraints:
+                if constraint.variable == "eitc_qualifying_children":
+                    child_constraint = constraint
+                    break
+
+            assert child_constraint is not None
+            assert child_constraint.operator == ">="
+            assert child_constraint.value == "3"
+
+    def test_eitc_by_children_totals_reasonable(self, temp_db):
+        """National totals by children should be reasonable."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            data = EITC_BY_CHILDREN_DATA[2021]
+
+            # Sum all claims - should be around 25M
+            total_claims = sum(d["claims"] for d in data.values())
+            assert 20_000_000 < total_claims < 30_000_000
+
+            # Sum all amounts - should be around $57-60B
+            total_amount = sum(d["amount"] for d in data.values())
+            assert 50_000_000_000 < total_amount < 70_000_000_000
+
+            # 0 children: lower average credit
+            avg_0_children = data["0_children"]["amount"] / data["0_children"]["claims"]
+            assert avg_0_children < 300  # Much lower max credit for no children
+
+            # 3+ children: higher average credit
+            avg_3plus = data["3plus_children"]["amount"] / data["3plus_children"]["claims"]
+            assert avg_3plus > 3000  # Higher max credit for 3+ children
+
+    def test_eitc_by_children_has_parent_stratum(self, temp_db):
+        """EITC by children strata should have national parent."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            national = session.exec(
+                select(Stratum).where(Stratum.name == "US All Filers")
+            ).first()
+
+            stratum_1 = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 1 Child")
+            ).first()
+
+            assert stratum_1.parent_id == national.id
+
+    def test_eitc_by_children_idempotent(self, temp_db):
+        """Loading EITC by children twice should not duplicate strata."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+            load_eitc_by_children_targets(session, years=[2021])
+
+            strata = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 2 Children")
+            ).all()
+
+            assert len(strata) == 1
+
+    def test_eitc_by_children_source_metadata(self, temp_db):
+        """EITC by children targets should have correct source metadata."""
+        with Session(temp_db) as session:
+            load_eitc_by_children_targets(session, years=[2021])
+
+            stratum = session.exec(
+                select(Stratum).where(Stratum.name == "US EITC 1 Child")
+            ).first()
+
+            target = session.exec(
+                select(Target)
+                .where(Target.stratum_id == stratum.id)
+                .where(Target.variable == "eitc_claims")
+            ).first()
+
+            assert target.source == DataSource.IRS_SOI
+            assert target.source_table == "EITC Statistics by Number of Qualifying Children"
+            assert "earned-income-tax-credit" in target.source_url

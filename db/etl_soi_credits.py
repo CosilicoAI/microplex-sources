@@ -501,6 +501,65 @@ SOURCE_URLS = {
     "ctc": "https://www.irs.gov/statistics/soi-tax-stats-state-data-fy-2022",
 }
 
+# National EITC data by number of qualifying children (2021)
+# Source: IRS SOI EITC Statistics
+# https://www.irs.gov/credits-deductions/individuals/earned-income-tax-credit/earned-income-tax-credit-statistics
+#
+# Representative 2021 data (national distribution):
+# - 0 children: ~7M claims, ~$1.5B (max credit ~$543, avg ~$214)
+# - 1 child: ~8M claims, ~$20B (max credit ~$3,618, avg ~$2,500)
+# - 2 children: ~6M claims, ~$20B (max credit ~$5,980, avg ~$3,333)
+# - 3+ children: ~4M claims, ~$15B (max credit ~$6,728, avg ~$3,750)
+
+EITC_BY_CHILDREN_DATA = {
+    2021: {
+        "0_children": {
+            "claims": 7_000_000,
+            "amount": 1_500_000_000,
+        },
+        "1_child": {
+            "claims": 8_000_000,
+            "amount": 20_000_000_000,
+        },
+        "2_children": {
+            "claims": 6_000_000,
+            "amount": 20_000_000_000,
+        },
+        "3plus_children": {
+            "claims": 4_000_000,
+            "amount": 15_000_000_000,
+        },
+    },
+}
+
+# Child count category definitions for strata
+EITC_CHILD_CATEGORIES = {
+    "0_children": {
+        "name": "US EITC 0 Children",
+        "description": "EITC recipients with no qualifying children",
+        "constraint_operator": "==",
+        "constraint_value": "0",
+    },
+    "1_child": {
+        "name": "US EITC 1 Child",
+        "description": "EITC recipients with one qualifying child",
+        "constraint_operator": "==",
+        "constraint_value": "1",
+    },
+    "2_children": {
+        "name": "US EITC 2 Children",
+        "description": "EITC recipients with two qualifying children",
+        "constraint_operator": "==",
+        "constraint_value": "2",
+    },
+    "3plus_children": {
+        "name": "US EITC 3+ Children",
+        "description": "EITC recipients with three or more qualifying children",
+        "constraint_operator": ">=",
+        "constraint_value": "3",
+    },
+}
+
 
 def get_or_create_stratum(
     session: Session,
@@ -676,6 +735,88 @@ def load_soi_credits_targets(session: Session, years: list[int] | None = None):
                     source=DataSource.IRS_SOI,
                     source_table="State Data FY",
                     source_url=SOURCE_URLS["ctc"],
+                )
+            )
+
+    session.commit()
+
+
+def load_eitc_by_children_targets(session: Session, years: list[int] | None = None):
+    """
+    Load national EITC targets stratified by number of qualifying children.
+
+    Creates strata for:
+    - 0 children
+    - 1 child
+    - 2 children
+    - 3+ children
+
+    Args:
+        session: Database session
+        years: Years to load (default: all available)
+    """
+    if years is None:
+        years = list(EITC_BY_CHILDREN_DATA.keys())
+
+    for year in years:
+        if year not in EITC_BY_CHILDREN_DATA:
+            continue
+
+        data = EITC_BY_CHILDREN_DATA[year]
+
+        # Get or create national stratum (parent for child-count strata)
+        national_stratum = get_or_create_stratum(
+            session,
+            name="US All Filers",
+            jurisdiction=Jurisdiction.US_FEDERAL,
+            constraints=[("is_tax_filer", "==", "1")],
+            description="All individual income tax returns filed in the US",
+            stratum_group_id="national",
+        )
+
+        # Create strata and targets for each child category
+        for category_key, category_data in data.items():
+            category_def = EITC_CHILD_CATEGORIES[category_key]
+
+            # Create stratum for this child category
+            stratum = get_or_create_stratum(
+                session,
+                name=category_def["name"],
+                jurisdiction=Jurisdiction.US_FEDERAL,
+                constraints=[
+                    ("is_tax_filer", "==", "1"),
+                    ("eitc_qualifying_children", category_def["constraint_operator"], category_def["constraint_value"]),
+                ],
+                description=category_def["description"],
+                parent_id=national_stratum.id,
+                stratum_group_id="eitc_by_children",
+            )
+
+            # Add EITC claims target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="eitc_claims",
+                    period=year,
+                    value=category_data["claims"],
+                    target_type=TargetType.COUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="EITC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["eitc"],
+                )
+            )
+
+            # Add EITC amount target
+            session.add(
+                Target(
+                    stratum_id=stratum.id,
+                    variable="eitc_amount",
+                    period=year,
+                    value=category_data["amount"],
+                    target_type=TargetType.AMOUNT,
+                    source=DataSource.IRS_SOI,
+                    source_table="EITC Statistics by Number of Qualifying Children",
+                    source_url=SOURCE_URLS["eitc"],
                 )
             )
 
