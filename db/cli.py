@@ -28,6 +28,12 @@ def cmd_load(args):
             load_soi_targets(session, years=years)
             print(f"Loaded SOI targets for years: {years or 'all available'}")
 
+        if args.source == "soi-state" or args.source == "all":
+            from .etl_soi_state import load_soi_state_targets
+            years = [int(y) for y in args.years.split(",")] if args.years else None
+            load_soi_state_targets(session, years=years)
+            print(f"Loaded state-level SOI targets for years: {years or 'all available'}")
+
         if args.source == "snap" or args.source == "all":
             from .etl_snap import load_snap_targets
             years = [int(y) for y in args.years.split(",")] if args.years else None
@@ -75,6 +81,12 @@ def cmd_load(args):
             years = [int(y) for y in args.years.split(",")] if args.years else None
             load_obr_targets(session, years=years)
             print(f"Loaded OBR projections for years: {years or 'all available'}")
+
+        if args.source == "ons" or args.source == "all":
+            from .etl_ons import load_ons_targets
+            years = [int(y) for y in args.years.split(",")] if args.years else None
+            load_ons_targets(session, years=years)
+            print(f"Loaded ONS projections for years: {years or 'all available'}")
 
 
 def cmd_stats(args):
@@ -157,7 +169,7 @@ def main():
     load_parser = subparsers.add_parser("load", help="Load targets from source")
     load_parser.add_argument(
         "source",
-        choices=["soi", "snap", "hmrc", "census", "ssa", "bls", "cps", "cbo", "obr", "all"],
+        choices=["soi", "soi-state", "snap", "hmrc", "census", "ssa", "bls", "cps", "cbo", "obr", "ons", "all"],
         help="Data source to load"
     )
     load_parser.add_argument(

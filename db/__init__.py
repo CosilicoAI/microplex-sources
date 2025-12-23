@@ -17,6 +17,7 @@ from .schema import (
     init_db,
 )
 from .etl_soi import load_soi_targets
+from .etl_soi_state import load_soi_state_targets
 from .etl_snap import load_snap_targets
 from .etl_hmrc import load_hmrc_targets
 from .etl_census import load_census_targets
@@ -25,6 +26,7 @@ from .etl_bls import load_bls_targets
 from .etl_cps import load_cps_targets
 from .etl_cbo import load_cbo_targets
 from .etl_obr import load_obr_targets
+from .etl_ons import load_ons_targets
 
 __all__ = [
     # Schema
@@ -39,6 +41,7 @@ __all__ = [
     "init_db",
     # ETL - Historical
     "load_soi_targets",
+    "load_soi_state_targets",
     "load_snap_targets",
     "load_hmrc_targets",
     "load_census_targets",
@@ -48,4 +51,5 @@ __all__ = [
     # ETL - Projections
     "load_cbo_targets",
     "load_obr_targets",
+    "load_ons_targets",
 ]
