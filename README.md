@@ -34,10 +34,10 @@ cosilico-data-sources/
 
 | Source | Variables | Description |
 |--------|-----------|-------------|
-| US CPS ASEC | 56 | Census household survey (income, benefits, demographics) |
+| US CPS ASEC | 78 | Census household survey (income, benefits, demographics) |
 | US IRS PUF | 33 | Tax return sample (income, deductions, credits) |
 | UK FRS | 29 | DWP household survey (income, benefits, housing) |
-| **Total** | **118** | |
+| **Total** | **140** | |
 
 ### Macro (Targets)
 
@@ -100,6 +100,34 @@ with get_session() as session:
 
 - **cosilico-microdata** - Builds calibrated datasets using these sources
 - **cosilico-us** / **cosilico-uk** - Statute encodings referencing these concepts
+
+## Microsimulation Workflow
+
+### 1. Download CPS Data
+
+```bash
+# Download and cache raw CPS ASEC data
+python micro/us/census/download_cps.py --year 2024
+```
+
+### 2. Convert to Cosilico Format
+
+```bash
+# Convert CPS to microsim input format
+python scripts/cps_to_cosilico.py --year 2024 --output microsim_2024.parquet
+
+# With entropy calibration to IRS SOI targets
+python scripts/cps_to_cosilico.py --year 2024 --calibrate --summary
+```
+
+### 3. Run Microsimulation
+
+```bash
+# In cosilico-us repository
+python -m cosilico_us.microsim --input cosilico_input_2024.parquet
+```
+
+See `docs/cps-variable-coverage.md` for detailed variable coverage analysis.
 
 ## Contributing
 
