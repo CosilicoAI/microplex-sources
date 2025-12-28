@@ -85,7 +85,18 @@ PARAMS_2024 = {
 
 
 def calculate_eitc(df: pd.DataFrame, params: dict) -> np.ndarray:
-    """Calculate EITC per 26 USC § 32."""
+    """Calculate EITC per 26 USC § 32.
+
+    Per the statute and IRS verification (EITC_VALIDATION_REPORT.md):
+    - Phase-in rate (credit percentage) is DIFFERENT from phaseout rate
+    - 0 children: 7.65% phase-in, 7.65% phaseout
+    - 1 child: 34.00% phase-in, 15.98% phaseout
+    - 2 children: 40.00% phase-in, 21.06% phaseout
+    - 3+ children: 45.00% phase-in, 21.06% phaseout
+
+    FIX (2025-12-27): Previously used phaseout_rate for phase-in calculation.
+    Now correctly computes phase_in_rate = max_credit / earned_income_threshold.
+    """
     p = params['eitc']
 
     # Cap children at 3 for EITC purposes
@@ -97,8 +108,12 @@ def calculate_eitc(df: pd.DataFrame, params: dict) -> np.ndarray:
     # Get max credit by number of children
     max_credit = np.array([p['max_credit'].get(n, p['max_credit'][3]) for n in n_children])
 
-    # Get earned income threshold
+    # Get earned income threshold (where phase-in plateau begins)
     ei_threshold = np.array([p['earned_income_threshold'].get(n, p['earned_income_threshold'][3]) for n in n_children])
+
+    # CORRECT: Phase-in rate = max_credit / earned_income_threshold
+    # This is the "credit percentage" per 26 USC § 32(b)(1)
+    phase_in_rate = max_credit / ei_threshold
 
     # Get phaseout start
     is_joint = df['is_joint'].values
@@ -108,16 +123,16 @@ def calculate_eitc(df: pd.DataFrame, params: dict) -> np.ndarray:
         np.array([p['phaseout_start']['single'].get(n, p['phaseout_start']['single'][3]) for n in n_children])
     )
 
-    # Get phaseout rate
+    # Get phaseout rate (different from phase-in rate!)
     phaseout_rate = np.array([p['phaseout_rate'].get(n, p['phaseout_rate'][3]) for n in n_children])
 
     earned = df['earned_income'].values
     agi = df['adjusted_gross_income'].values
 
-    # Phase-in: credit builds up as earned income increases
-    phase_in_credit = np.minimum(max_credit, earned * phaseout_rate)
+    # Phase-in: credit builds up at phase_in_rate until max_credit reached
+    phase_in_credit = np.minimum(max_credit, earned * phase_in_rate)
 
-    # Phase-out: credit reduces as income exceeds threshold
+    # Phase-out: credit reduces at phaseout_rate as income exceeds threshold
     phase_out_income = np.maximum(earned, agi)
     excess_income = np.maximum(0, phase_out_income - phaseout_start)
     phase_out_reduction = excess_income * phaseout_rate
