@@ -157,9 +157,18 @@ def calculate_eitc(df: pd.DataFrame, params: dict) -> np.ndarray:
     return eitc
 
 
-def calculate_ctc(df: pd.DataFrame, params: dict) -> tuple[np.ndarray, np.ndarray]:
+def calculate_ctc(df: pd.DataFrame, params: dict, tax_before_credits: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Calculate Child Tax Credit per 26 USC § 24.
+
+    The non-refundable CTC offsets tax liability first.
+    The refundable ACTC (Additional CTC) is for the remaining amount,
+    limited by the earned income formula.
+
+    Args:
+        df: Tax unit DataFrame
+        params: Tax parameters
+        tax_before_credits: Income tax before any credits (needed to limit non-refundable)
 
     Returns (nonrefundable_ctc, refundable_actc)
     """
@@ -168,10 +177,10 @@ def calculate_ctc(df: pd.DataFrame, params: dict) -> tuple[np.ndarray, np.ndarra
     n_children = df['num_ctc_children'].values
     n_other_deps = df['num_other_dependents'].values
 
-    # Credit before phaseout
+    # Credit before phaseout per § 24(a)
     credit_before = n_children * p['credit_per_child'] + n_other_deps * p['credit_per_other_dependent']
 
-    # Phaseout threshold
+    # Phaseout per § 24(b)
     threshold = np.where(
         df['is_joint'].values,
         p['phaseout_threshold_joint'],
@@ -187,20 +196,24 @@ def calculate_ctc(df: pd.DataFrame, params: dict) -> tuple[np.ndarray, np.ndarra
     # Tentative credit after phaseout
     tentative = np.maximum(0, credit_before - phaseout)
 
-    # ACTC calculation (refundable portion)
+    # Step 1: Non-refundable CTC limited by tax liability per § 24(a)
+    # Can only offset tax, not go negative
+    nonrefundable = np.minimum(tentative, np.maximum(0, tax_before_credits))
+
+    # Step 2: Remaining credit that could be refundable
+    remaining = tentative - nonrefundable
+
+    # Step 3: ACTC (refundable) per § 24(d) - earned income formula
     earned = df['earned_income'].values
     excess_earned = np.maximum(0, earned - p['earned_income_threshold'])
     actc_earned_portion = p['earned_income_rate'] * excess_earned
 
-    # Per-child cap on refundable amount
+    # Per-child cap on refundable amount per § 24(h)(5)
     actc_cap = n_children * p['refundable_max_per_child']
     actc_limit = np.minimum(actc_earned_portion, actc_cap)
 
-    # ACTC limited by tentative credit
-    actc = np.minimum(tentative, actc_limit)
-
-    # Nonrefundable = tentative - actc
-    nonrefundable = tentative - actc
+    # ACTC is min of remaining credit and earned income limit
+    actc = np.minimum(remaining, actc_limit)
 
     return nonrefundable, actc
 
@@ -380,18 +393,29 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
     df = df.copy()
 
     # Column names match statute definitions in cosilico-us
+
+    # 26/1.rac::income_tax_before_credits - must calculate first for CTC
+    df['income_tax_before_credits'] = calculate_income_tax(df, params)
+
     # 26/32.rac::eitc
     df['eitc'] = calculate_eitc(df, params)
 
     # 26/24.rac::non_refundable_ctc, refundable_ctc, total_child_tax_credit
-    df['non_refundable_ctc'], df['refundable_ctc'] = calculate_ctc(df, params)
+    # Non-refundable CTC limited by tax liability
+    df['non_refundable_ctc'], df['refundable_ctc'] = calculate_ctc(
+        df, params, df['income_tax_before_credits'].values
+    )
     df['total_child_tax_credit'] = df['non_refundable_ctc'] + df['refundable_ctc']
+
+    # 26/1.rac::income_tax (after credits)
+    df['income_tax'] = np.maximum(0,
+        df['income_tax_before_credits']
+        - df['non_refundable_ctc']
+        - df['eitc']  # EITC is refundable but also offsets tax
+    )
 
     # 26/1401/a.rac::self_employment_tax
     df['self_employment_tax'] = calculate_se_tax(df, params)
-
-    # 26/1.rac::income_tax
-    df['income_tax'] = calculate_income_tax(df, params)
 
     # 26/86.rac::taxable_social_security
     df['taxable_social_security'] = calculate_taxable_ss(df, params)
@@ -424,6 +448,7 @@ if __name__ == "__main__":
     print(f"  Nonrefundable:${wtotal('non_refundable_ctc'):>20,.0f}")
     print(f"  Refundable:   ${wtotal('refundable_ctc'):>20,.0f}")
     print(f"SE Tax:         ${wtotal('self_employment_tax'):>20,.0f}")
+    print(f"Tax Before Cred:${wtotal('income_tax_before_credits'):>20,.0f}")
     print(f"Income Tax:     ${wtotal('income_tax'):>20,.0f}")
     print(f"Taxable SS:     ${wtotal('taxable_social_security'):>20,.0f}")
     print(f"NIIT:           ${wtotal('niit'):>20,.0f}")
