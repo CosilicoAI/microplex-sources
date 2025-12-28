@@ -65,6 +65,17 @@ PARAMS_2024 = {
         (731200, float('inf'), 0.37),
     ],
 
+    # Income tax brackets (head of household) per 26 USC § 1(b)
+    'brackets_hoh': [
+        (0, 16550, 0.10),
+        (16550, 63100, 0.12),
+        (63100, 100500, 0.22),
+        (100500, 191950, 0.24),
+        (191950, 243700, 0.32),
+        (243700, 609350, 0.35),
+        (609350, float('inf'), 0.37),
+    ],
+
     # Social Security taxability thresholds (frozen since 1984)
     'ss_taxability': {
         'base_single': 25000,
@@ -237,15 +248,170 @@ def calculate_se_tax(df: pd.DataFrame, params: dict) -> np.ndarray:
     return ss_tax + medicare_tax
 
 
+def calculate_is_head_of_household(df: pd.DataFrame) -> np.ndarray:
+    """Determine Head of Household status per 26 USC § 2(b).
+
+    Per statute: unmarried individual who maintains household for qualifying person.
+    Simplified: not married AND has at least one dependent.
+    """
+    is_joint = df['is_joint'].values
+    has_dependents = df['num_dependents'].values > 0
+
+    # HOH requires: (1) not married, (2) has qualifying person
+    return (~is_joint) & has_dependents
+
+
+def calculate_taxable_ss_for_agi(df: pd.DataFrame, params: dict) -> np.ndarray:
+    """Calculate taxable Social Security for AGI calculation per 26 USC § 86.
+
+    This is called during AGI calculation before AGI is finalized.
+    Uses provisional income = (other income) + 50% * SS benefits.
+    """
+    p = params['ss_taxability']
+
+    ss_benefits = df['social_security_income'].values
+    is_joint = df['is_joint'].values
+
+    # Provisional income for SS taxability (MAGI excluding SS + 50% SS)
+    # Use total income minus SS as approximation of MAGI
+    other_income = (
+        df['wage_income'].values +
+        df['self_employment_income'].values +
+        df['interest_income'].values +
+        df['dividend_income'].values +
+        df['rental_income'].values +
+        df['unemployment_compensation'].values +
+        df.get('other_income', pd.Series(0, index=df.index)).values
+    )
+
+    provisional = other_income + 0.5 * ss_benefits
+
+    # Get thresholds
+    base = np.where(is_joint, p['base_joint'], p['base_single'])
+    adjusted = np.where(is_joint, p['adjusted_joint'], p['adjusted_single'])
+
+    # Tier 1: 50% of lesser of (benefits, excess over base)
+    excess_base = np.maximum(0, provisional - base)
+    tier1 = np.minimum(p['tier1_rate'] * ss_benefits, p['tier1_rate'] * excess_base)
+
+    # Tier 2: 35% of excess over adjusted base
+    excess_adjusted = np.maximum(0, provisional - adjusted)
+    tier2_addition = (p['tier2_rate'] - p['tier1_rate']) * excess_adjusted
+
+    # Total capped at 85%
+    total = tier1 + tier2_addition
+    max_taxable = p['tier2_rate'] * ss_benefits
+
+    return np.minimum(total, max_taxable)
+
+
+def calculate_adjusted_gross_income(df: pd.DataFrame, params: dict) -> np.ndarray:
+    """Calculate Adjusted Gross Income per 26 USC § 62.
+
+    AGI = Gross Income - Above-the-line deductions
+
+    Above-the-line deductions include:
+    - 50% of self-employment tax (§ 164(f))
+    - Self-employed health insurance (§ 162(l)) - not modeled
+    - IRA contributions (§ 219) - not modeled
+    - Student loan interest (§ 221) - not modeled
+    """
+    # Gross income components
+    wages = df['wage_income'].values
+    se_income = df['self_employment_income'].values
+    interest = df['interest_income'].values
+    dividends = df['dividend_income'].values
+    rental = df['rental_income'].values
+    ui = df['unemployment_compensation'].values
+    other = df.get('other_income', pd.Series(0, index=df.index)).values
+
+    # Calculate taxable SS (uses provisional income, no circular dependency)
+    taxable_ss = calculate_taxable_ss_for_agi(df, params)
+
+    # Self-employment tax deduction (50% of SE tax)
+    se_tax = calculate_se_tax(df, params)
+    se_tax_deduction = se_tax * 0.5
+
+    # Gross income
+    gross_income = (
+        wages +
+        se_income +
+        interest +
+        dividends +
+        rental +
+        taxable_ss +  # Only taxable portion of SS
+        ui +
+        other
+    )
+
+    # AGI = Gross - above-the-line deductions
+    agi = gross_income - se_tax_deduction
+
+    return np.maximum(0, agi)
+
+
+def calculate_standard_deduction_simple(df: pd.DataFrame, params: dict) -> np.ndarray:
+    """Calculate standard deduction per 26 USC § 63(c).
+
+    Basic standard deduction by filing status, plus additional amounts
+    for age 65+ or blind.
+    """
+    p = params['standard_deduction']
+
+    is_joint = df['is_joint'].values
+    is_hoh = df['is_head_of_household'].values
+
+    # Basic standard deduction by filing status
+    basic = np.where(
+        is_joint,
+        p['basic_joint'],
+        np.where(is_hoh, p['basic_hoh'], p['basic_single'])
+    )
+
+    # Additional deduction for age 65+
+    head_age = df['head_age'].values
+    spouse_age = df['spouse_age'].fillna(0).values
+
+    head_65_plus = head_age >= 65
+    spouse_65_plus = (spouse_age >= 65) & is_joint
+
+    # Additional amount per condition
+    additional_per = np.where(is_joint, p['additional_joint'], p['additional_single_or_hoh'])
+
+    additional = head_65_plus.astype(int) * additional_per
+    additional = additional + spouse_65_plus.astype(int) * p['additional_joint']
+
+    return basic + additional
+
+
+def calculate_taxable_income(df: pd.DataFrame, params: dict) -> np.ndarray:
+    """Calculate taxable income per 26 USC § 63.
+
+    Taxable income = AGI - (standard or itemized deduction)
+    Simplified: always uses standard deduction.
+    """
+    agi = df['adjusted_gross_income'].values
+    std_ded = df['standard_deduction'].values
+
+    return np.maximum(0, agi - std_ded)
+
+
 def calculate_income_tax(df: pd.DataFrame, params: dict) -> np.ndarray:
     """Calculate income tax using progressive brackets per 26 USC § 1."""
     taxable = df['taxable_income'].values
     is_joint = df['is_joint'].values
+    is_hoh = df['is_head_of_household'].values
 
     tax = np.zeros(len(df))
 
     for i in range(len(df)):
-        brackets = params['brackets_joint'] if is_joint[i] else params['brackets_single']
+        if is_joint[i]:
+            brackets = params['brackets_joint']
+        elif is_hoh[i]:
+            brackets = params['brackets_hoh']
+        else:
+            brackets = params['brackets_single']
+
         income = taxable[i]
         unit_tax = 0
 
@@ -379,10 +545,13 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
     """
     Run all Cosilico tax calculations on tax unit data.
 
+    This is where POLICY is executed. The tax_unit_builder provides only
+    raw data; all calculations per statute belong here.
+
     Output column names match statute variable definitions in cosilico-us.
 
     Args:
-        df: Tax unit DataFrame from tax_unit_builder
+        df: Tax unit DataFrame from tax_unit_builder (raw data only)
         year: Tax year
 
     Returns:
@@ -392,7 +561,26 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
 
     df = df.copy()
 
-    # Column names match statute definitions in cosilico-us
+    # ==========================================================================
+    # FOUNDATION CALCULATIONS (required before tax calculations)
+    # These implement the core statutory definitions
+    # ==========================================================================
+
+    # 26/2/b.rac::is_head_of_household - filing status determination
+    df['is_head_of_household'] = calculate_is_head_of_household(df)
+
+    # 26/62.rac::adjusted_gross_income
+    df['adjusted_gross_income'] = calculate_adjusted_gross_income(df, params)
+
+    # 26/63/c.rac::standard_deduction
+    df['standard_deduction'] = calculate_standard_deduction_simple(df, params)
+
+    # 26/63.rac::taxable_income
+    df['taxable_income'] = calculate_taxable_income(df, params)
+
+    # ==========================================================================
+    # TAX CALCULATIONS
+    # ==========================================================================
 
     # 26/1.rac::income_tax_before_credits - must calculate first for CTC
     df['income_tax_before_credits'] = calculate_income_tax(df, params)
@@ -418,7 +606,7 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
     df['self_employment_tax'] = calculate_se_tax(df, params)
 
     # 26/86.rac::taxable_social_security
-    df['taxable_social_security'] = calculate_taxable_ss(df, params)
+    df['taxable_social_security'] = calculate_taxable_ss_for_agi(df, params)
 
     # 26/1411/a.rac::niit
     df['niit'] = calculate_niit(df, params)

@@ -165,52 +165,32 @@ def _determine_filing_status(head: pd.Series, spouse: pd.Series | None) -> str:
 
 
 def _compute_derived_variables(df: pd.DataFrame, year: int) -> pd.DataFrame:
-    """Compute AGI, taxable income, and other derived variables."""
+    """Compute DATA-DERIVED variables only.
 
-    # Simplified AGI calculation
-    # Real AGI has many above-the-line deductions we're not capturing
-    df['adjusted_gross_income'] = (
+    NO POLICY CALCULATIONS HERE. All policy rules belong in .rac files:
+    - adjusted_gross_income -> 26 USC § 62
+    - standard_deduction -> 26 USC § 63(c)
+    - taxable_income -> 26 USC § 63
+    - is_head_of_household -> 26 USC § 2(b)
+
+    This function only computes simple aggregations from raw CPS data.
+    """
+    # Simple income aggregations (not policy - just sums)
+    df['earned_income'] = df['wage_income'] + df['self_employment_income']
+    df['investment_income'] = df['interest_income'] + df['dividend_income']
+    df['total_income'] = (
         df['wage_income'] +
         df['self_employment_income'] +
         df['interest_income'] +
         df['dividend_income'] +
         df['rental_income'] +
-        # Only portion of SS is taxable (simplified - using 85% for high income)
-        np.minimum(df['social_security_income'] * 0.85, df['social_security_income']) +
+        df['social_security_income'] +
         df['unemployment_compensation'] +
-        df['other_income'] -
-        # 50% SE tax deduction (simplified)
-        np.maximum(0, df['self_employment_income'] * 0.9235 * 0.153 * 0.5)
+        df['other_income']
     )
 
-    # Standard deduction amounts for 2024
-    std_ded = {
-        'SINGLE': 14600,
-        'JOINT': 29200,
-        'HEAD_OF_HOUSEHOLD': 21900,
-        'SEPARATE': 14600,
-    }
-
-    # Apply standard deduction (simplified - not handling itemizers)
-    df['standard_deduction'] = df['filing_status'].map(std_ded).fillna(14600)
-
-    # Additional standard deduction for age 65+
-    additional_amount = np.where(
-        df['filing_status'] == 'JOINT',
-        1550,  # Per person for joint
-        1950   # For single/HoH
-    )
-
-    df['additional_std_ded'] = 0
-    df.loc[df['head_age'] >= 65, 'additional_std_ded'] += additional_amount[df['head_age'] >= 65]
-    df.loc[df['spouse_age'].notna() & (df['spouse_age'] >= 65), 'additional_std_ded'] += 1550
-
-    df['total_standard_deduction'] = df['standard_deduction'] + df['additional_std_ded']
-
-    # Taxable income
-    df['taxable_income'] = np.maximum(0, df['adjusted_gross_income'] - df['total_standard_deduction'])
-
-    # Filing status as boolean for joint
+    # Filing status derived from CPS marital status (not policy)
+    # is_joint = married spouse present per CPS definition
     df['is_joint'] = df['filing_status'] == 'JOINT'
 
     return df
@@ -255,7 +235,7 @@ if __name__ == "__main__":
         print(f"  {n} children: {count:,}")
     print(f"  3+ children: {(df['num_ctc_children'] >= 3).sum():,}")
 
-    print("\nIncome statistics:")
-    print(f"  Mean AGI: ${df['adjusted_gross_income'].mean():,.0f}")
-    print(f"  Median AGI: ${df['adjusted_gross_income'].median():,.0f}")
-    print(f"  Total AGI: ${(df['adjusted_gross_income'] * df['weight']).sum():,.0f}")
+    print("\nIncome statistics (raw totals, not AGI):")
+    print(f"  Mean total income: ${df['total_income'].mean():,.0f}")
+    print(f"  Median total income: ${df['total_income'].median():,.0f}")
+    print(f"  Total income: ${(df['total_income'] * df['weight']).sum():,.0f}")
