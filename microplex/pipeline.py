@@ -53,7 +53,10 @@ def load_cps_from_supabase(year: int, limit: int = 200000) -> pd.DataFrame:
 def load_targets_from_supabase(year: int) -> List[Dict[str, Any]]:
     """Load calibration targets from Supabase."""
     print(f"Loading targets for {year} from Supabase...")
-    targets = query_targets(jurisdiction="us", year=year)
+    # Get targets for US jurisdictions (both "US" and "US_FEDERAL")
+    all_targets = query_targets(year=year)
+    targets = [t for t in all_targets
+               if t.get("strata", {}).get("jurisdiction", "").startswith("US")]
     print(f"  Loaded {len(targets)} targets")
     return targets
 
@@ -131,57 +134,114 @@ def build_constraints_from_targets(
     df: pd.DataFrame,
     targets: List[Dict[str, Any]],
     min_obs: int = 100,
+    include_amounts: bool = False,
 ) -> List[Dict]:
     """
     Build calibration constraints from Supabase targets.
 
-    Returns list of constraint dicts with indicator arrays.
-    For count targets: indicator = 1 if in stratum, 0 otherwise
-    For amount targets (agi_total): skip for now (complex to calibrate)
+    Currently supports:
+    - Tax unit counts by AGI bracket (adjusted_gross_income ranges)
+    - AGI totals by bracket (if include_amounts=True)
+
+    Skips unsupported targets:
+    - Filing status (need CPS marital status mapping)
+    - Program participation (SNAP, SSI, OASDI - need program vars)
+    - Population counts (different universe than tax filers)
     """
     constraints = []
-    seen_keys = set()  # Deduplicate constraints
+    seen_keys = set()
     n = len(df)
-
     df = df.copy()
+
+    # Precompute AGI brackets
     df["agi_bracket"] = assign_agi_bracket(df["adjusted_gross_income"].values)
+
+    # Supported variables for tax filer calibration
+    SUPPORTED_VARIABLES = {"tax_unit_count", "adjusted_gross_income"}
 
     for target in targets:
         variable = target["variable"]
         value = target["value"]
         target_type = target.get("target_type")
 
-        # Skip rate targets and amount targets (focus on count calibration)
-        if target_type == "rate" or target_type == "amount":
+        # Only calibrate on supported variables
+        if variable not in SUPPORTED_VARIABLES:
             continue
 
-        # Get stratum constraints
+        # Skip rate targets; optionally skip amount targets
+        if target_type == "rate":
+            continue
+        if target_type == "amount" and not include_amounts:
+            continue
+
         stratum = target.get("strata", {})
         stratum_name = stratum.get("name", "unknown")
         stratum_constraints = stratum.get("stratum_constraints", [])
 
-        # Deduplicate by stratum + variable
-        key = (stratum_name, variable)
+        # Skip strata with unsupported constraint types
+        # (filing_status, snap, ssi, oasdi, etc.)
+        has_unsupported = False
+        for c in stratum_constraints:
+            var = c.get("variable")
+            if var not in {"adjusted_gross_income", "is_tax_filer", "agi_bracket"}:
+                has_unsupported = True
+                break
+        if has_unsupported:
+            continue
+
+        # Deduplicate
+        key = (stratum_name, variable, target_type)
         if key in seen_keys:
             continue
         seen_keys.add(key)
 
-        # Build indicator based on stratum
-        indicator = np.ones(n, dtype=float)
+        # Build indicator from stratum constraints
+        indicator = np.ones(n, dtype=bool)
 
         for constraint in stratum_constraints:
             var = constraint.get("variable")
+            op = constraint.get("operator", "==")
             val = constraint.get("value")
 
-            if var == "agi_bracket":
-                indicator *= (df["agi_bracket"] == val).astype(float)
+            if var == "adjusted_gross_income":
+                col = df["adjusted_gross_income"]
+                val = float(val)
+            elif var == "agi_bracket":
+                col = df["agi_bracket"]
+            elif var == "is_tax_filer":
+                # All records in our dataset are filers
+                col = pd.Series([1] * n)
+                val = int(val)
+            else:
+                continue
 
-        n_obs = indicator.sum()
+            # Apply operator
+            if op == "==":
+                indicator &= (col == val)
+            elif op == ">=":
+                indicator &= (col >= val)
+            elif op == ">":
+                indicator &= (col > val)
+            elif op == "<=":
+                indicator &= (col <= val)
+            elif op == "<":
+                indicator &= (col < val)
+            elif op == "!=":
+                indicator &= (col != val)
+
+        indicator = indicator.astype(float)
+
+        # For amount targets, multiply by AGI
+        if target_type == "amount" and variable == "adjusted_gross_income":
+            indicator = indicator * df["adjusted_gross_income"].values
+
+        n_obs = (indicator > 0).sum()
         if n_obs >= min_obs:
             constraints.append({
                 "indicator": indicator,
                 "target_value": value,
                 "variable": variable,
+                "target_type": target_type,
                 "stratum": stratum_name,
                 "n_obs": n_obs,
             })
@@ -389,9 +449,9 @@ def run_pipeline(
     df = load_cps_from_supabase(year, limit=limit)
     targets = load_targets_from_supabase(year)
 
-    if not targets:
-        # Fall back to 2021 targets if year not available
-        print(f"  No targets for {year}, trying 2021...")
+    if len(targets) < 50:
+        # Fall back to 2021 targets if year has insufficient targets
+        print(f"  Only {len(targets)} targets for {year}, trying 2021...")
         targets = load_targets_from_supabase(2021)
 
     # Build tax units
