@@ -366,6 +366,8 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
     """
     Run all Cosilico tax calculations on tax unit data.
 
+    Output column names match statute variable definitions in cosilico-us.
+
     Args:
         df: Tax unit DataFrame from tax_unit_builder
         year: Tax year
@@ -377,19 +379,25 @@ def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
 
     df = df.copy()
 
-    # Calculate each component
-    df['cos_eitc'] = calculate_eitc(df, params)
+    # Column names match statute definitions in cosilico-us
+    # 26/32.rac::eitc
+    df['eitc'] = calculate_eitc(df, params)
 
-    df['cos_ctc_nonref'], df['cos_ctc_ref'] = calculate_ctc(df, params)
-    df['cos_ctc_total'] = df['cos_ctc_nonref'] + df['cos_ctc_ref']
+    # 26/24.rac::non_refundable_ctc, refundable_ctc, total_child_tax_credit
+    df['non_refundable_ctc'], df['refundable_ctc'] = calculate_ctc(df, params)
+    df['total_child_tax_credit'] = df['non_refundable_ctc'] + df['refundable_ctc']
 
-    df['cos_se_tax'] = calculate_se_tax(df, params)
+    # 26/1401/a.rac::self_employment_tax
+    df['self_employment_tax'] = calculate_se_tax(df, params)
 
-    df['cos_income_tax'] = calculate_income_tax(df, params)
+    # 26/1.rac::income_tax
+    df['income_tax'] = calculate_income_tax(df, params)
 
-    df['cos_taxable_ss'] = calculate_taxable_ss(df, params)
+    # 26/86.rac::taxable_social_security
+    df['taxable_social_security'] = calculate_taxable_ss(df, params)
 
-    df['cos_niit'] = calculate_niit(df, params)
+    # 26/1411/a.rac::niit
+    df['niit'] = calculate_niit(df, params)
 
     return df
 
@@ -411,22 +419,22 @@ if __name__ == "__main__":
         return (df[col] * df['weight']).sum()
 
     print("\n--- Weighted Totals ---")
-    print(f"EITC:           ${wtotal('cos_eitc'):>20,.0f}")
-    print(f"CTC Total:      ${wtotal('cos_ctc_total'):>20,.0f}")
-    print(f"  Nonrefundable:${wtotal('cos_ctc_nonref'):>20,.0f}")
-    print(f"  Refundable:   ${wtotal('cos_ctc_ref'):>20,.0f}")
-    print(f"SE Tax:         ${wtotal('cos_se_tax'):>20,.0f}")
-    print(f"Income Tax:     ${wtotal('cos_income_tax'):>20,.0f}")
-    print(f"Taxable SS:     ${wtotal('cos_taxable_ss'):>20,.0f}")
-    print(f"NIIT:           ${wtotal('cos_niit'):>20,.0f}")
+    print(f"EITC:           ${wtotal('eitc'):>20,.0f}")
+    print(f"CTC Total:      ${wtotal('total_child_tax_credit'):>20,.0f}")
+    print(f"  Nonrefundable:${wtotal('non_refundable_ctc'):>20,.0f}")
+    print(f"  Refundable:   ${wtotal('refundable_ctc'):>20,.0f}")
+    print(f"SE Tax:         ${wtotal('self_employment_tax'):>20,.0f}")
+    print(f"Income Tax:     ${wtotal('income_tax'):>20,.0f}")
+    print(f"Taxable SS:     ${wtotal('taxable_social_security'):>20,.0f}")
+    print(f"NIIT:           ${wtotal('niit'):>20,.0f}")
 
     # Compare to CPS reported values
     print("\n--- CPS Reported vs Cosilico ---")
-    print(f"EITC: CPS=${wtotal('cps_eitc'):,.0f}, Cos=${wtotal('cos_eitc'):,.0f}")
-    print(f"CTC:  CPS=${wtotal('cps_ctc'):,.0f}, Cos=${wtotal('cos_ctc_total'):,.0f}")
+    print(f"EITC: CPS=${wtotal('cps_eitc'):,.0f}, Cosilico=${wtotal('eitc'):,.0f}")
+    print(f"CTC:  CPS=${wtotal('cps_ctc'):,.0f}, Cosilico=${wtotal('total_child_tax_credit'):,.0f}")
 
     # Recipients
     print("\n--- Recipients (unweighted) ---")
-    print(f"EITC recipients: {(df['cos_eitc'] > 0).sum():,}")
-    print(f"CTC recipients:  {(df['cos_ctc_total'] > 0).sum():,}")
-    print(f"SE Tax payers:   {(df['cos_se_tax'] > 0).sum():,}")
+    print(f"EITC recipients: {(df['eitc'] > 0).sum():,}")
+    print(f"CTC recipients:  {(df['total_child_tax_credit'] > 0).sum():,}")
+    print(f"SE Tax payers:   {(df['self_employment_tax'] > 0).sum():,}")

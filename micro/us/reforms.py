@@ -180,13 +180,13 @@ def run_reform_analysis(
         'weighted_population': weight.sum(),
     }
 
-    # Compare key variables
+    # Compare key variables (names match statute definitions)
     variables = [
-        ('cos_eitc', 'EITC'),
-        ('cos_ctc_total', 'CTC'),
-        ('cos_income_tax', 'Income Tax'),
-        ('cos_se_tax', 'SE Tax'),
-        ('cos_niit', 'NIIT'),
+        ('eitc', 'EITC'),
+        ('total_child_tax_credit', 'CTC'),
+        ('income_tax', 'Income Tax'),
+        ('self_employment_tax', 'SE Tax'),
+        ('niit', 'NIIT'),
     ]
 
     for var, label in variables:
@@ -286,11 +286,11 @@ def run_calibrated_reform_analysis(
     }
 
     variables = [
-        ('cos_eitc', 'EITC'),
-        ('cos_ctc_total', 'CTC'),
-        ('cos_income_tax', 'Income Tax'),
-        ('cos_se_tax', 'SE Tax'),
-        ('cos_niit', 'NIIT'),
+        ('eitc', 'EITC'),
+        ('total_child_tax_credit', 'CTC'),
+        ('income_tax', 'Income Tax'),
+        ('self_employment_tax', 'SE Tax'),
+        ('niit', 'NIIT'),
     ]
 
     for var, label in variables:
