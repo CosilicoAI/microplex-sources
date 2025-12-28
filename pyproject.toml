@@ -1,7 +1,7 @@
 [project]
-name = "cosilico-data-sources"
+name = "microplex-sources"
 version = "0.1.0"
-description = "Data sources for tax-benefit microsimulation: variable mappings and calibration targets"
+description = "Data sources for microplex microsimulation: microdata, calibration targets, and country-specific pipelines"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.24.0",  # For calibration calculations
     "pandas>=2.0.0",  # For microdata handling
     "scipy>=1.11.0",  # For entropy minimization optimization
+    "microplex>=0.1.0",  # Synthesis and calibration algorithms
 ]
 
 [project.optional-dependencies]
