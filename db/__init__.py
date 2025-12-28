@@ -1,9 +1,25 @@
 """
 Database layer for targets and calibration data.
 
-Uses SQLModel (SQLAlchemy + Pydantic) with SQLite for local storage.
+Supports two backends:
+- SQLite (local development via SQLModel)
+- Supabase (production via supabase-py)
+
 Design follows policyengine-us-data patterns.
 """
+
+from .supabase_client import (
+    SupabaseConfig,
+    get_supabase_client,
+    query_sources,
+    query_strata,
+    query_targets,
+    query_cps,
+    query_puf,
+    query_silc,
+    insert_cps_batch,
+    insert_targets_batch,
+)
 
 from .schema import (
     DataSource,
@@ -34,6 +50,17 @@ from .etl_medicaid import load_medicaid_targets
 from .etl_aca_enrollment import load_aca_enrollment_targets
 
 __all__ = [
+    # Supabase client
+    "SupabaseConfig",
+    "get_supabase_client",
+    "query_sources",
+    "query_strata",
+    "query_targets",
+    "query_cps",
+    "query_puf",
+    "query_silc",
+    "insert_cps_batch",
+    "insert_targets_batch",
     # Schema
     "DataSource",
     "Jurisdiction",
