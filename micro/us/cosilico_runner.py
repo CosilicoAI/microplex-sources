@@ -81,6 +81,17 @@ PARAMS_2024 = {
         'threshold_single': 200000,
         'threshold_joint': 250000,
     },
+
+    # Standard deduction (26 USC § 63)
+    'standard_deduction': {
+        'basic_single': 14600,
+        'basic_joint': 29200,
+        'basic_hoh': 21900,
+        'additional_single_or_hoh': 1950,  # 65+ or blind
+        'additional_joint': 1550,  # per person 65+ or blind
+        'dependent_minimum': 1300,
+        'dependent_earned_addition': 450,
+    },
 }
 
 
@@ -285,6 +296,70 @@ def calculate_niit(df: pd.DataFrame, params: dict) -> np.ndarray:
     niit_base = np.minimum(investment, excess_agi)
 
     return niit_base * p['rate']
+
+
+def calculate_standard_deduction(df: pd.DataFrame, params: dict) -> np.ndarray:
+    """Calculate standard deduction per 26 USC § 63.
+
+    The standard deduction consists of:
+    1. Basic standard deduction based on filing status
+    2. Additional deduction for age 65+ or blind
+    3. Special rules for dependents (limited to earned income + $450, min $1,300)
+    """
+    p = params['standard_deduction']
+
+    is_joint = df['is_joint'].values
+    is_hoh = df['is_head_of_household'].values
+    is_dependent = df['is_dependent'].values
+    age_head = df['age_head'].values
+    age_spouse = df['age_spouse'].values
+    is_blind_head = df['is_blind_head'].values
+    is_blind_spouse = df['is_blind_spouse'].values
+    earned_income = df['earned_income'].values
+
+    # Basic standard deduction by filing status
+    basic = np.where(
+        is_joint,
+        p['basic_joint'],
+        np.where(is_hoh, p['basic_hoh'], p['basic_single'])
+    )
+
+    # Additional deduction for age 65+ or blind
+    # Joint filers: $1,550 per person who is 65+ or blind
+    # Single/HOH: $1,950 per condition (65+ or blind)
+    head_65_plus = age_head >= 65
+    spouse_65_plus = age_spouse >= 65
+
+    # Count additional deductions
+    additional_count_head = head_65_plus.astype(int) + is_blind_head.astype(int)
+    additional_count_spouse = np.where(
+        is_joint,
+        spouse_65_plus.astype(int) + is_blind_spouse.astype(int),
+        0
+    )
+
+    # Additional amount per condition
+    additional_per_condition = np.where(
+        is_joint,
+        p['additional_joint'],
+        p['additional_single_or_hoh']
+    )
+
+    additional = (additional_count_head + additional_count_spouse) * additional_per_condition
+
+    # Total before dependent limitation
+    total = basic + additional
+
+    # Dependent limitation: min($1,300, earned + $450), capped at basic
+    dependent_limit = np.maximum(
+        p['dependent_minimum'],
+        np.minimum(earned_income + p['dependent_earned_addition'], basic)
+    )
+
+    # Apply dependent limitation where applicable
+    result = np.where(is_dependent, dependent_limit, total)
+
+    return result
 
 
 def run_all_calculations(df: pd.DataFrame, year: int = 2024) -> pd.DataFrame:
