@@ -231,6 +231,8 @@ def query_microdata(
     """
     Query raw microdata from a specific table.
 
+    Uses pagination to handle large result sets (PostgREST default is 1000).
+
     Args:
         jurisdiction: e.g., "us"
         institution: e.g., "census"
@@ -248,16 +250,31 @@ def query_microdata(
     table_name = get_table_name(jurisdiction, institution, dataset, year, table_type)
 
     select_cols = ",".join(columns) if columns else "*"
-    query = client.schema("microplex").table(table_name).select(select_cols)
+    page_size = 1000  # PostgREST default limit
+    all_data = []
+    offset = 0
 
-    if filters:
-        for col, val in filters.items():
-            query = query.eq(col, val)
+    while offset < limit:
+        fetch_limit = min(page_size, limit - offset)
+        query = client.schema("microplex").table(table_name).select(select_cols)
 
-    query = query.limit(limit)
-    result = query.execute()
+        if filters:
+            for col, val in filters.items():
+                query = query.eq(col, val)
 
-    return pd.DataFrame(result.data)
+        query = query.range(offset, offset + fetch_limit - 1)
+        result = query.execute()
+
+        if not result.data:
+            break
+
+        all_data.extend(result.data)
+        offset += len(result.data)
+
+        if len(result.data) < fetch_limit:
+            break  # No more data
+
+    return pd.DataFrame(all_data)
 
 
 def query_cps_asec(
