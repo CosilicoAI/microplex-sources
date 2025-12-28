@@ -358,7 +358,8 @@ def query_targets(
         List of target records with stratum info
     """
     client = get_supabase_client()
-    query = client.schema("microplex").table("targets").select("*, strata(*), sources(*)")
+    # Nested join: strata with their stratum_constraints
+    query = client.schema("microplex").table("targets").select("*, strata(*, stratum_constraints(*)), sources(*)")
 
     if year:
         query = query.eq("period", year)

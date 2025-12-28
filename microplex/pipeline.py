@@ -131,8 +131,11 @@ def build_constraints_from_targets(
     Build calibration constraints from Supabase targets.
 
     Returns list of constraint dicts with indicator arrays.
+    For count targets: indicator = 1 if in stratum, 0 otherwise
+    For amount targets (agi_total): skip for now (complex to calibrate)
     """
     constraints = []
+    seen_keys = set()  # Deduplicate constraints
     n = len(df)
 
     df = df.copy()
@@ -141,21 +144,28 @@ def build_constraints_from_targets(
     for target in targets:
         variable = target["variable"]
         value = target["value"]
+        target_type = target.get("target_type")
 
-        # Skip rate targets for now (focus on counts)
-        if target.get("target_type") == "rate":
+        # Skip rate targets and amount targets (focus on count calibration)
+        if target_type == "rate" or target_type == "amount":
             continue
 
         # Get stratum constraints
         stratum = target.get("strata", {})
+        stratum_name = stratum.get("name", "unknown")
         stratum_constraints = stratum.get("stratum_constraints", [])
+
+        # Deduplicate by stratum + variable
+        key = (stratum_name, variable)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
 
         # Build indicator based on stratum
         indicator = np.ones(n, dtype=float)
 
         for constraint in stratum_constraints:
             var = constraint.get("variable")
-            op = constraint.get("operator")
             val = constraint.get("value")
 
             if var == "agi_bracket":
@@ -167,7 +177,7 @@ def build_constraints_from_targets(
                 "indicator": indicator,
                 "target_value": value,
                 "variable": variable,
-                "stratum": stratum.get("name", "unknown"),
+                "stratum": stratum_name,
                 "n_obs": n_obs,
             })
 
@@ -248,6 +258,19 @@ def calibrate_weights(
         print(f"Original weighted total: {original_weights.sum():,.0f}")
 
     constraints = build_constraints_from_targets(df, targets)
+
+    # Pre-scale weights to match total population target
+    total_target = None
+    for c in constraints:
+        if c["variable"] == "tax_unit_count" and c["n_obs"] == len(df):
+            total_target = c["target_value"]
+            break
+
+    if total_target:
+        scale_factor = total_target / original_weights.sum()
+        original_weights = original_weights * scale_factor
+        if verbose:
+            print(f"Pre-scaled weights by {scale_factor:.3f} to match total target {total_target:,.0f}")
 
     # Pre-calibration values
     targets_before = {}
