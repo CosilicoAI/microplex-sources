@@ -33,7 +33,9 @@ class TargetSpec:
     ready for constraint matrix building.
 
     Attributes:
-        variable: PolicyEngine variable name (e.g., "tax_unit_count")
+        variable: Variable name. Should use fully qualified format:
+            ``{model}:{path}#{var_name}`` (e.g., ``us:statute/26/32#eitc``).
+            Legacy unqualified names (e.g., ``tax_unit_count``) are still supported.
         value: Target aggregate value
         target_type: COUNT, AMOUNT, or RATE
         constraints: List of (variable, operator, value) tuples defining stratum
@@ -51,6 +53,45 @@ class TargetSpec:
     period: int
     tolerance: Optional[float] = None
     stratum_name: Optional[str] = None
+
+    @property
+    def is_qualified(self) -> bool:
+        """Return True if the variable uses the qualified format ``{model}:{path}#{var_name}``."""
+        return ":" in self.variable and "#" in self.variable
+
+    @property
+    def variable_name(self) -> str:
+        """Extract just the variable name from a qualified reference (the part after ``#``).
+
+        For qualified format ``us:statute/26/32#eitc``, returns ``eitc``.
+        For unqualified format, returns the full variable string.
+        """
+        if "#" in self.variable:
+            return self.variable.split("#", 1)[1]
+        return self.variable
+
+    @property
+    def variable_model(self) -> Optional[str]:
+        """Extract the model prefix (the part before ``:``).
+
+        For qualified format ``us:statute/26/32#eitc``, returns ``us``.
+        For unqualified format, returns None.
+        """
+        if ":" in self.variable:
+            return self.variable.split(":", 1)[0]
+        return None
+
+    @property
+    def variable_path(self) -> Optional[str]:
+        """Extract the path (the part between ``:`` and ``#``).
+
+        For qualified format ``us:statute/26/32#eitc``, returns ``statute/26/32``.
+        For unqualified format, returns None.
+        """
+        if ":" in self.variable and "#" in self.variable:
+            after_colon = self.variable.split(":", 1)[1]
+            return after_colon.split("#", 1)[0]
+        return None
 
 
 def get_targets(
